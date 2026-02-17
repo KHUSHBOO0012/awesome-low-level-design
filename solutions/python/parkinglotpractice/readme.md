@@ -1,26 +1,26 @@
 # Parking Lot
 
 ## Must-Ask Clarifications (Interview Focus)
-A) Parking Policy
-Are vehicles restricted to spot type? (S → small only? L → large only)
-Can motorcycles park in car spots?
-Are there special rules for handicapped/EV?
-B) Billing Rules
-Flat vs hourly billing?
-Pricing per spot type?
-Grace period or penalty after max time?
-C) Spot Dimensions
-Do spots have width and height constraints?
-Are vehicles categorized by dimensions or fixed types?
-D) Levels & Navigation
-Are levels equal capacity?
-Do we fill lowest level first?
-E) Concurrency / Real-world
-Simultaneous entry?
-Multiple gates?
-Multiple exit billing counters?
-F) Reservation
-Are spots reservable?
+1. Parking Policy  
+  Are vehicles restricted to spot type? (S → small only? L → large only)  
+  Can motorcycles park in car spots?  
+  Are there special rules for handicapped/EV?  
+1. Billing Rules  
+  Flat vs hourly billing?  
+  Pricing per spot type?
+  Grace period or penalty after max time?  
+1. Spot Dimensions  
+  Do spots have width and height constraints?  
+  Are vehicles categorized by dimensions or fixed types?
+1. Levels & Navigation  
+  Are levels equal capacity?  
+  Do we fill lowest level first?  
+1. Concurrency / Real-world
+  Simultaneous entry?
+  Multiple gates?
+  Multiple exit billing counters?
+1. Reservation
+  Are spots reservable?
 
 
 ## Capabilities:
@@ -38,15 +38,34 @@ Fast spot lookup
 - Whats in scope? whole flow or any specific piece like parking and exit?
 
 ## Entities
-ParkingLot: holds levels, entry/exit panels
-Level: Spot management on that level
-ParkingSpot: Know type, availability, can_fit(vehicle)
-Vehicle: VehicleType + size
-BillingService: Calculates fees based on rules.
-ParkingTicket: Vehicle, spot, entry_time
-DisplayBoard: Shows availability to drivers (Optional)
-SpotAllocator: Strategy pattern to pick nearest/best spot
-Main
+- ParkingLot  
+  * Owns: levels, SpotAllocationStrategy, BillingService, tickets: Dict[ticket_id, ParkingTicket] active and closed.
+  * Concurrency: tickets_lock for ticket map, Allocation/release locking happens inside Level  
+  * Responsibilities: park(vehicle), exit(ticket_id), register_display_board(board)
+- Level: Spot management on that level  
+  * Owns: spots: Dict[spot_id, ParkingSpot], Free_heaps: Dict[SpotType, MinHeap[(distance, spot_id)]] (fast lookup),
+  * lock, observers: List[LevelObserver]
+  * Responsibilities: reserve_best_spot(vehicle) -> Optional[ParkingSpot], release_spot(spot_id), subscribe(observer) + _notify()
+- ParkingSpot: Know type, availability, can_fit(vehicle)  
+  * spot_id, spot_type, distance, occupied_by  
+  * is_free(), can_fit(vehicle) -> bool  
+  * Occupancy truth lives here (occupied_by), not in multiple places.   
+- Vehicle: VehicleType + size  
+   * plate, vtype  
+   * VehicleFactory.create(plate, vtype)  
+- BillingService: Calculates fees based on rules.  
+   * strategy: BillingStrategy (HourlyBilling / FlatBilling), cfg: BillingConfig (rates, grace, penalty rules)  
+   * calculate(ticket, spot_type, exit_time) -> Bill
+- ParkingTicket: Vehicle, spot, entry_time  
+  * ticket_id, vehicle_plate, level_id, spot_id, entry_time: datetime, exit_time: Optional[datetime]  
+  * close(exit_time) (marks exit, prevents reuse): Keep ticket immutable-ish except exit_time; that’s interview-friendly.  
+- DisplayBoard: Shows availability to drivers (Optional)  
+  * LevelObserver.on_level_update(level_id, free_counts)  
+  * react to level availability changes (screens, API, etc.)  
+- SpotAllocator: Strategy pattern to pick nearest/best spot
+   * allocate(levels, vehicle) -> (Level, ParkingSpot): NearestFirstAllocator
+ 
+ Main
 
 ## Rules
 Fit
@@ -110,6 +129,7 @@ make sure to use design pattern like singleton, factory, strategy, observer wher
 
 ## Code
 ```python
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -439,6 +459,7 @@ class ExitGate:
 
     def scan_and_exit(self, ticket_id: str) -> Bill:
         return self.lot.exit(ticket_id)
+
 
 ```
 
