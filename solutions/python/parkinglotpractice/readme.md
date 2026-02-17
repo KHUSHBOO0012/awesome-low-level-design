@@ -97,32 +97,17 @@ ExitGate.validate(ticket)
  → Payment recorded
 
 ## Important points
-Maintain separate queues per spot type or a priority structure if nearest spot first.
-Thread safety when when concurrent parking/exit happens, else
-- Two gates assigning same spot
-- Billing updated while exit processing
-- with level.lock:
-    spot = free_spots.pop()
-To fallback from small to large spot if vehicle small spot is filled but large is empty.
-
-## Some class and function structure to start
-from abc import ABC, abstractmethod
-from datetime import datetime
-
-class Vehicle(ABC):
-    @property
-    @abstractmethod
-    def size(self): pass
-
-class Spot(ABC):
-    @property
-    @abstractmethod
-    def can_fit(self, vehicle): pass
-
-class ParkingLot:
-    def park(self, vehicle) -> "Ticket": ...
-    def exit(self, ticket) -> "Bill": ...
-    def get_free_spots(self): ...
+Maintain separate queues per spot type or a priority structure if nearest spot first.  
+To fallback from small to large spot if vehicle small spot is filled but large is empty.  
+In prod I’d avoid singleton, prefer DI / application-managed lifecycle.  
+Thread safety when when concurrent parking/exit happens, else  
+- Two gates assigning same spot  
+- Billing updated while exit processing  
+- with level.lock:  
+    spot = free_spots.pop()  
+- Think re-entrance and deadlock  
+Copy shared mutable state like observer under lock. Operate on the copy outside the lock.
+Never call external/unknown code while holding a lock   
 
 ## Design patterns
 make sure to use design pattern like singleton, factory, strategy, observer wherever possible.
@@ -330,25 +315,27 @@ class Level:
 
         self._observers: List[LevelObserver] = []
 
+    # In case this is dynamic, and can change at runtime, 
     def subscribe(self, obs: LevelObserver) -> None:
-        self._observers.append(obs)
-        self._notify()
+        with self._lock:
+            self._observers.append(obs)
+            free_counts = self._free_counts_locked()
+            observers = list(self._observers)
+        # notify outside lock
+        for o in observers:
+            o.on_level_update(self.level_id, free_counts)
 
-    def _notify(self) -> None:
-        free_counts = {t: self.free_count(t) for t in SpotType}
-        for obs in self._observers:
+    def _free_counts_locked(self) -> Dict[SpotType, int]:
+        return {t: sum(1 for s in self._spots.values() if s.spot_type == t and s.is_free()) for t in SpotType}
+
+    def _notify_outside_lock(self, free_counts: Dict[SpotType, int], observers: List[LevelObserver]) -> None:
+        for obs in observers:
             obs.on_level_update(self.level_id, free_counts)
-
-    def free_count(self, spot_type: SpotType) -> int:
-        # heap may contain stale entries; count accurately by scanning only when asked
-        # (kept cheap by being called on changes only via _notify)
-        return sum(1 for s in self._spots.values() if s.spot_type == spot_type and s.is_free())
 
     def get_spot(self, spot_id: str) -> ParkingSpot:
         return self._spots[spot_id]
 
     def reserve_best_spot(self, vehicle: Vehicle) -> Optional[ParkingSpot]:
-        # Concurrency boundary: lock inside the level.
         with self._lock:
             for stype in FIT_RULES[vehicle.vtype]:
                 heap = self._free_heaps[stype]
@@ -357,10 +344,17 @@ class Level:
                     spot = self._spots[sid]
                     if spot.is_free() and spot.can_fit(vehicle):
                         spot.occupied_by = vehicle.plate
-                        self._notify()
-                        return spot
-                    # stale heap entry -> continue
-            return None
+                        free_counts = self._free_counts_locked()
+                        observers = list(self._observers)
+                        # exit lock before notify
+                        break
+                else: # runs ONLY if the while loop ended normally (no break)
+                    continue
+                break
+            else:
+                return None
+        self._notify_outside_lock(free_counts, observers)
+        return spot
 
     def release_spot(self, spot_id: str) -> None:
         with self._lock:
@@ -424,13 +418,14 @@ class ParkingLot:
         return ticket
 
     def exit(self, ticket_id: str) -> Bill:
+        exit_time = datetime.utcnow()
+
+        # validate + close atomically to prevent double-exit
         with self._tickets_lock:
             ticket = self._tickets.get(ticket_id)
-        if not ticket or ticket.exit_time is not None:
-            raise InvalidTicketError("Invalid or already closed ticket")
-
-        exit_time = datetime.utcnow()
-        ticket.close(exit_time)
+            if not ticket or ticket.exit_time is not None:
+                raise InvalidTicketError("Invalid or already closed ticket")
+            ticket.close(exit_time)
 
         level = next((l for l in self._levels if l.level_id == ticket.level_id), None)
         if not level:
@@ -440,7 +435,6 @@ class ParkingLot:
         bill = self._billing.calculate(ticket, spot.spot_type, exit_time)
         level.release_spot(ticket.spot_id)
         return bill
-
 
 # ---------- Gates (thin wrappers, good interview separation) ----------
 class EntryGate:
