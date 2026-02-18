@@ -129,7 +129,11 @@ from typing import Dict, List, Optional, Tuple, Iterable
 
 # ---------- Errors ----------
 class ParkingLotError(Exception): ...
+
+
 class LotFullError(ParkingLotError): ...
+
+
 class InvalidTicketError(ParkingLotError): ...
 
 
@@ -163,6 +167,7 @@ class Vehicle:
 
 class VehicleFactory:
     """Factory pattern: hides construction rules/validation."""
+
     @staticmethod
     def create(plate: str, vtype: VehicleType) -> Vehicle:
         if not plate:
@@ -208,11 +213,14 @@ class Bill:
 # ---------- Observer ----------
 class LevelObserver(ABC):
     @abstractmethod
-    def on_level_update(self, level_id: str, free_counts: Dict[SpotType, int]) -> None: ...
+    def on_level_update(
+        self, level_id: str, free_counts: Dict[SpotType, int]
+    ) -> None: ...
 
 
 class DisplayBoard(LevelObserver):
     """Observer: reacts to availability changes."""
+
     def __init__(self, name: str):
         self.name = name
         self.last: Dict[str, Dict[SpotType, int]] = {}
@@ -225,19 +233,23 @@ class DisplayBoard(LevelObserver):
 # ---------- Billing (Strategy + Factory) ----------
 @dataclass(frozen=True)
 class BillingConfig:
-    hourly_rate: Dict[SpotType, float]         # per hour rate
+    hourly_rate: Dict[SpotType, float]  # per hour rate
     grace_period_minutes: int = 10
     penalty_after_hours: int = 24
-    penalty_multiplier: float = 2.0            # after 24h, multiply charges
+    penalty_multiplier: float = 2.0  # after 24h, multiply charges
 
 
 class BillingStrategy(ABC):
     @abstractmethod
-    def compute(self, spot_type: SpotType, duration: timedelta, cfg: BillingConfig) -> float: ...
+    def compute(
+        self, spot_type: SpotType, duration: timedelta, cfg: BillingConfig
+    ) -> float: ...
 
 
 class HourlyBilling(BillingStrategy):
-    def compute(self, spot_type: SpotType, duration: timedelta, cfg: BillingConfig) -> float:
+    def compute(
+        self, spot_type: SpotType, duration: timedelta, cfg: BillingConfig
+    ) -> float:
         if duration <= timedelta(minutes=cfg.grace_period_minutes):
             return 0.0
 
@@ -255,7 +267,9 @@ class FlatBilling(BillingStrategy):
     def __init__(self, flat_fee: float):
         self.flat_fee = flat_fee
 
-    def compute(self, spot_type: SpotType, duration: timedelta, cfg: BillingConfig) -> float:
+    def compute(
+        self, spot_type: SpotType, duration: timedelta, cfg: BillingConfig
+    ) -> float:
         # still respect grace, if asked
         if duration <= timedelta(minutes=cfg.grace_period_minutes):
             return 0.0
@@ -278,21 +292,33 @@ class BillingService:
         self._strategy = strategy
         self._cfg = cfg
 
-    def calculate(self, ticket: ParkingTicket, spot_type: SpotType, exit_time: datetime) -> Bill:
+    def calculate(
+        self, ticket: ParkingTicket, spot_type: SpotType, exit_time: datetime
+    ) -> Bill:
         duration = exit_time - ticket.entry_time
         amount = self._strategy.compute(spot_type, duration, self._cfg)
-        return Bill(ticket_id=ticket.ticket_id, vehicle_plate=ticket.vehicle_plate, amount=amount, duration=duration)
+        return Bill(
+            ticket_id=ticket.ticket_id,
+            vehicle_plate=ticket.vehicle_plate,
+            amount=amount,
+            duration=duration,
+        )
 
 
 # ---------- Allocation (Strategy) ----------
 class SpotAllocationStrategy(ABC):
     @abstractmethod
-    def allocate(self, levels: Iterable["Level"], vehicle: Vehicle) -> Tuple["Level", ParkingSpot]: ...
+    def allocate(
+        self, levels: Iterable["Level"], vehicle: Vehicle
+    ) -> Tuple["Level", ParkingSpot]: ...
 
 
 class NearestFirstAllocator(SpotAllocationStrategy):
     """Try levels in order; within a level choose smallest feasible spot type first, by distance heap."""
-    def allocate(self, levels: Iterable["Level"], vehicle: Vehicle) -> Tuple["Level", ParkingSpot]:
+
+    def allocate(
+        self, levels: Iterable["Level"], vehicle: Vehicle
+    ) -> Tuple["Level", ParkingSpot]:
         for level in levels:
             spot = level.reserve_best_spot(vehicle)
             if spot:
@@ -308,14 +334,16 @@ class Level:
         self._spots: Dict[str, ParkingSpot] = {s.spot_id: s for s in spots}
 
         # fast lookup: heaps per spot type
-        self._free_heaps: Dict[SpotType, List[Tuple[int, str]]] = {t: [] for t in SpotType}
+        self._free_heaps: Dict[SpotType, List[Tuple[int, str]]] = {
+            t: [] for t in SpotType
+        }
         for s in spots:
             if s.is_free():
                 heapq.heappush(self._free_heaps[s.spot_type], (s.distance, s.spot_id))
 
         self._observers: List[LevelObserver] = []
 
-    # In case this is dynamic, and can change at runtime, 
+    # In case this is dynamic, and can change at runtime,
     def subscribe(self, obs: LevelObserver) -> None:
         with self._lock:
             self._observers.append(obs)
@@ -326,9 +354,14 @@ class Level:
             o.on_level_update(self.level_id, free_counts)
 
     def _free_counts_locked(self) -> Dict[SpotType, int]:
-        return {t: sum(1 for s in self._spots.values() if s.spot_type == t and s.is_free()) for t in SpotType}
+        return {
+            t: sum(1 for s in self._spots.values() if s.spot_type == t and s.is_free())
+            for t in SpotType
+        }
 
-    def _notify_outside_lock(self, free_counts: Dict[SpotType, int], observers: List[LevelObserver]) -> None:
+    def _notify_outside_lock(
+        self, free_counts: Dict[SpotType, int], observers: List[LevelObserver]
+    ) -> None:
         for obs in observers:
             obs.on_level_update(self.level_id, free_counts)
 
@@ -348,7 +381,7 @@ class Level:
                         observers = list(self._observers)
                         # exit lock before notify
                         break
-                else: # runs ONLY if the while loop ended normally (no break)
+                else:  # runs ONLY if the while loop ended normally (no break)
                     continue
                 break
             else:
@@ -362,8 +395,12 @@ class Level:
             if not spot:
                 raise ValueError("Unknown spot")
             spot.occupied_by = None
-            heapq.heappush(self._free_heaps[spot.spot_type], (spot.distance, spot.spot_id))
-            self._notify()
+            heapq.heappush(
+                self._free_heaps[spot.spot_type], (spot.distance, spot.spot_id)
+            )
+            free_counts = self._free_counts_locked()
+            observers = list(self._observers)
+        self._notify_outside_lock(free_counts, observers)
 
 
 # ---------- Singleton ParkingLot ----------
@@ -379,9 +416,12 @@ class ParkingLot:
                     cls._instance = super().__new__(cls)
         return cls._instance
 
-    def __init__(self, levels: Optional[List[Level]] = None,
-                 allocator: Optional[SpotAllocationStrategy] = None,
-                 billing: Optional[BillingService] = None):
+    def __init__(
+        self,
+        levels: Optional[List[Level]] = None,
+        allocator: Optional[SpotAllocationStrategy] = None,
+        billing: Optional[BillingService] = None,
+    ):
         # Avoid re-init in singleton
         if hasattr(self, "_initialized") and self._initialized:
             return
@@ -391,7 +431,13 @@ class ParkingLot:
         self._allocator = allocator or NearestFirstAllocator()
         self._billing = billing or BillingService(
             strategy=BillingStrategyFactory.create("hourly"),
-            cfg=BillingConfig(hourly_rate={SpotType.SMALL: 10, SpotType.MEDIUM: 15, SpotType.LARGE: 25}),
+            cfg=BillingConfig(
+                hourly_rate={
+                    SpotType.SMALL: 10,
+                    SpotType.MEDIUM: 15,
+                    SpotType.LARGE: 25,
+                }
+            ),
         )
 
         self._tickets_lock = threading.Lock()
@@ -436,6 +482,7 @@ class ParkingLot:
         level.release_spot(ticket.spot_id)
         return bill
 
+
 # ---------- Gates (thin wrappers, good interview separation) ----------
 class EntryGate:
     def __init__(self, gate_id: str, lot: ParkingLot):
@@ -453,6 +500,87 @@ class ExitGate:
 
     def scan_and_exit(self, ticket_id: str) -> Bill:
         return self.lot.exit(ticket_id)
+
+
+def main():
+    # Build sample lot with 2 levels, each with mixed spots and distances
+    spots_l1 = [
+        ParkingSpot("L1-S1", SpotType.SMALL, 1),
+        ParkingSpot("L1-S2", SpotType.SMALL, 2),
+        ParkingSpot("L1-M1", SpotType.MEDIUM, 3),
+        ParkingSpot("L1-M2", SpotType.MEDIUM, 4),
+        ParkingSpot("L1-L1", SpotType.LARGE, 5),
+    ]
+    spots_l2 = [
+        ParkingSpot("L2-S1", SpotType.SMALL, 1),
+        ParkingSpot("L2-M1", SpotType.MEDIUM, 2),
+        ParkingSpot("L2-L1", SpotType.LARGE, 3),
+        ParkingSpot("L2-L2", SpotType.LARGE, 4),
+    ]
+
+    level1 = Level("L1", spots_l1)
+    level2 = Level("L2", spots_l2)
+
+    billing = BillingService(
+        strategy=BillingStrategyFactory.create("hourly"),
+        cfg=BillingConfig(
+            hourly_rate={SpotType.SMALL: 10, SpotType.MEDIUM: 15, SpotType.LARGE: 25},
+            grace_period_minutes=10,
+            penalty_after_hours=24,
+            penalty_multiplier=2.0,
+        ),
+    )
+
+    # NOTE: since ParkingLot is singleton in your code, this may reuse a previous instance
+    # in the same interpreter session. In a real test, run fresh process or remove singleton.
+    lot = ParkingLot(
+        levels=[level1, level2], allocator=NearestFirstAllocator(), billing=billing
+    )
+
+    board = DisplayBoard("MainBoard")
+    lot.register_display_board(board)
+
+    entry = EntryGate("E1", lot)
+    exit_gate = ExitGate("X1", lot)
+
+    # Park vehicles
+    v1 = VehicleFactory.create("A-111", VehicleType.MOTORCYCLE)
+    v2 = VehicleFactory.create("B-222", VehicleType.CAR)
+    v3 = VehicleFactory.create("C-333", VehicleType.TRUCK)
+
+    t1 = entry.scan_and_park(v1)
+    t2 = entry.scan_and_park(v2)
+    t3 = entry.scan_and_park(v3)
+
+    print("Tickets issued:")
+    print(t1)
+    print(t2)
+    print(t3)
+
+    # For testing billing quickly without waiting, move entry_time into the past
+    # (ok in interview demo even if a bit “hacky”)
+    t1.entry_time = datetime.utcnow() - timedelta(minutes=5)  # within grace => 0
+    t2.entry_time = datetime.utcnow() - timedelta(
+        hours=1, minutes=5
+    )  # => 2 hours billed
+    t3.entry_time = datetime.utcnow() - timedelta(hours=26)  # penalty multiplier
+
+    b1 = exit_gate.scan_and_exit(t1.ticket_id)
+    b2 = exit_gate.scan_and_exit(t2.ticket_id)
+    b3 = exit_gate.scan_and_exit(t3.ticket_id)
+
+    print("\nBills:")
+    print(b1)
+    print(b2)
+    print(b3)
+
+    print("\nDisplayBoard last state:")
+    for level_id, counts in board.last.items():
+        print(level_id, {k.value: v for k, v in counts.items()})
+
+
+if __name__ == "__main__":
+    main()
 
 
 ```
